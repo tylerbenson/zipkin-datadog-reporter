@@ -1,0 +1,3 @@
+rootProject.name = 'zipkin-datadog-reporter'
+
+include ':zipkin-datadog-autoconfigure'
