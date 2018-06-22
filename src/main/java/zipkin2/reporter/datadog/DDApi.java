@@ -4,29 +4,33 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.BufferedReader;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
+import java.text.MessageFormat;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.logging.Logger;
 import org.msgpack.jackson.dataformat.MessagePackFactory;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+
+import static java.util.logging.Level.FINE;
+import static java.util.logging.Level.FINER;
+import static java.util.logging.Level.FINEST;
+import static java.util.logging.Level.WARNING;
 
 /** The API pointing to a DD agent */
 class DDApi {
-  public static final String DEFAULT_HOSTNAME = "localhost";
-  public static final int DEFAULT_PORT = 8126;
+  static final String DEFAULT_HOSTNAME = "localhost";
+  static final int DEFAULT_PORT = 8126;
 
-  private static final Logger log = LoggerFactory.getLogger(DDApi.class);
+  private static final Logger log = Logger.getLogger(DDApi.class.getName());
 
-  public static final String JAVA_VERSION = System.getProperty("java.version", "unknown");
-  public static final String JAVA_VM_NAME = System.getProperty("java.vm.name", "unknown");
+  static final String JAVA_VERSION = System.getProperty("java.version", "unknown");
+  static final String JAVA_VM_NAME = System.getProperty("java.vm.name", "unknown");
   private static final String DATADOG_META_LANG = "Datadog-Meta-Lang";
   private static final String DATADOG_META_LANG_VERSION = "Datadog-Meta-Lang-Version";
   private static final String DATADOG_META_LANG_INTERPRETER = "Datadog-Meta-Lang-Interpreter";
@@ -38,14 +42,12 @@ class DDApi {
   private static final long MILLISECONDS_BETWEEN_ERROR_LOG = TimeUnit.MINUTES.toMillis(5);
 
   private final String tracesEndpoint;
-  private final List<ResponseListener> responseListeners = new ArrayList<>();
 
-  private AtomicInteger traceCount;
   private volatile long nextAllowedLogTime = 0;
 
   private static final ObjectMapper objectMapper = new ObjectMapper(new MessagePackFactory());
 
-  public DDApi(final String host, final int port) {
+  DDApi(final String host, final int port) {
     this(host, port, traceEndpointAvailable("http://" + host + ":" + port + TRACES_ENDPOINT_V4));
   }
 
@@ -53,19 +55,9 @@ class DDApi {
     if (v4EndpointsAvailable) {
       this.tracesEndpoint = "http://" + host + ":" + port + TRACES_ENDPOINT_V4;
     } else {
-      log.debug("API v0.4 endpoints not available. Downgrading to v0.3");
+      log.log(FINE, "API v0.4 endpoints not available. Downgrading to v0.3");
       this.tracesEndpoint = "http://" + host + ":" + port + TRACES_ENDPOINT_V3;
     }
-  }
-
-  public void addResponseListener(final ResponseListener listener) {
-    if (!responseListeners.contains(listener)) {
-      responseListeners.add(listener);
-    }
-  }
-
-  public void addTraceCounter(final AtomicInteger traceCount) {
-    this.traceCount = traceCount;
   }
 
   /**
@@ -74,16 +66,16 @@ class DDApi {
    * @param traces the traces to be sent
    * @return the staus code returned
    */
-  public boolean sendTraces(final List<List<DDMappingSpan>> traces) {
-    final int totalSize = traceCount == null ? traces.size() : traceCount.getAndSet(0);
+  void sendTraces(final List<List<DDMappingSpan>> traces) {
+    final int totalSize = traces.size();
     try {
       final HttpURLConnection httpCon = getHttpURLConnection(tracesEndpoint);
       httpCon.setRequestProperty(X_DATADOG_TRACE_COUNT, String.valueOf(totalSize));
 
-      final OutputStream out = httpCon.getOutputStream();
-      objectMapper.writeValue(out, traces);
-      out.flush();
-      out.close();
+      try (final OutputStream out = httpCon.getOutputStream()) {
+        objectMapper.writeValue(out, traces);
+        out.flush();
+      }
 
       String responseString = null;
       {
@@ -101,47 +93,53 @@ class DDApi {
         responseString = sb.toString();
       }
 
+      skipAllContent(httpCon);
+
       final int responseCode = httpCon.getResponseCode();
       if (responseCode != 200) {
-        if (log.isDebugEnabled()) {
-          log.debug(
-              "Error while sending {} of {} traces to the DD agent. Status: {}, ResponseMessage: ",
-              traces.size(),
-              totalSize,
-              responseCode,
-              httpCon.getResponseMessage());
+        if (log.isLoggable(FINER)) {
+          log.log(
+              FINER,
+              MessageFormat.format(
+                  "Error while sending {} of {} traces to the DD agent. Status: {}, ResponseMessage: ",
+                  traces.size(),
+                  totalSize,
+                  responseCode,
+                  httpCon.getResponseMessage()));
         } else if (nextAllowedLogTime < System.currentTimeMillis()) {
           nextAllowedLogTime = System.currentTimeMillis() + MILLISECONDS_BETWEEN_ERROR_LOG;
-          log.warn(
-              "Error while sending {} of {} traces to the DD agent. Status: {} (going silent for {} seconds)",
-              traces.size(),
-              totalSize,
-              responseCode,
-              httpCon.getResponseMessage(),
-              TimeUnit.MILLISECONDS.toMinutes(MILLISECONDS_BETWEEN_ERROR_LOG));
+          log.log(
+              WARNING,
+              MessageFormat.format(
+                  "Error while sending {} of {} traces to the DD agent. Status: {} (going silent for {} seconds)",
+                  traces.size(),
+                  totalSize,
+                  responseCode,
+                  httpCon.getResponseMessage(),
+                  TimeUnit.MILLISECONDS.toMinutes(MILLISECONDS_BETWEEN_ERROR_LOG)));
         }
-        return false;
+        return;
       }
 
-      log.debug("Succesfully sent {} of {} traces to the DD agent.", traces.size(), totalSize);
+      log.log(
+          FINEST,
+          MessageFormat.format(
+              "Succesfully sent {} of {} traces to the DD agent.", traces.size(), totalSize));
 
       try {
         if (null != responseString
             && !"".equals(responseString.trim())
             && !"OK".equalsIgnoreCase(responseString.trim())) {
           final JsonNode response = objectMapper.readTree(responseString);
-          for (final ResponseListener listener : responseListeners) {
-            listener.onResponse(tracesEndpoint, response);
-          }
         }
       } catch (final IOException e) {
-        log.debug("failed to parse DD agent response: " + responseString, e);
+        log.log(FINE, "failed to parse DD agent response: " + responseString, e);
       }
-      return true;
 
     } catch (final IOException e) {
-      if (log.isDebugEnabled()) {
-        log.debug(
+      if (log.isLoggable(FINE)) {
+        log.log(
+            FINE,
             "Error while sending "
                 + traces.size()
                 + " of "
@@ -150,24 +148,21 @@ class DDApi {
             e);
       } else if (nextAllowedLogTime < System.currentTimeMillis()) {
         nextAllowedLogTime = System.currentTimeMillis() + MILLISECONDS_BETWEEN_ERROR_LOG;
-        log.warn(
-            "Error while sending {} of {} traces to the DD agent. {}: {} (going silent for {} minutes)",
-            traces.size(),
-            totalSize,
-            e.getClass().getName(),
-            e.getMessage(),
-            TimeUnit.MILLISECONDS.toMinutes(MILLISECONDS_BETWEEN_ERROR_LOG));
+        log.log(
+            WARNING,
+            MessageFormat.format(
+                "Error while sending {} of {} traces to the DD agent. {}: {} (going silent for {} minutes)",
+                traces.size(),
+                totalSize,
+                e.getClass().getName(),
+                e.getMessage(),
+                TimeUnit.MILLISECONDS.toMinutes(MILLISECONDS_BETWEEN_ERROR_LOG)));
       }
-      return false;
     }
   }
 
   private static boolean traceEndpointAvailable(final String endpoint) {
     return endpointAvailable(endpoint, Collections.emptyList(), true);
-  }
-
-  private static boolean serviceEndpointAvailable(final String endpoint) {
-    return endpointAvailable(endpoint, Collections.emptyMap(), true);
   }
 
   private static boolean endpointAvailable(
@@ -179,10 +174,10 @@ class DDApi {
       httpCon.setConnectTimeout((int) TimeUnit.SECONDS.toMillis(1));
       httpCon.setReadTimeout((int) TimeUnit.SECONDS.toMillis(1));
 
-      final OutputStream out = httpCon.getOutputStream();
-      objectMapper.writeValue(out, data);
-      out.flush();
-      out.close();
+      try (final OutputStream out = httpCon.getOutputStream()) {
+        objectMapper.writeValue(out, data);
+        out.flush();
+      }
       return httpCon.getResponseCode() == 200;
     } catch (final IOException e) {
       if (retry) {
@@ -208,13 +203,32 @@ class DDApi {
     return httpCon;
   }
 
+  /* Ensure we read the full response. Borrowed from https://github.com/openzipkin/zipkin-reporter-java/blob/2eb169e/urlconnection/src/main/java/zipkin2/reporter/urlconnection/URLConnectionSender.java#L231-L252 */
+  private void skipAllContent(HttpURLConnection connection) throws IOException {
+    InputStream in = connection.getInputStream();
+    IOException thrown = skipAndSuppress(in);
+    if (thrown == null) return;
+    InputStream err = connection.getErrorStream();
+    if (err != null) skipAndSuppress(err); // null is possible, if the connection was dropped
+    throw thrown;
+  }
+
+  private IOException skipAndSuppress(InputStream in) {
+    try {
+      while (in.read() != -1) ; // skip
+      return null;
+    } catch (IOException e) {
+      return e;
+    } finally {
+      try {
+        in.close();
+      } catch (IOException suppressed) {
+      }
+    }
+  }
+
   @Override
   public String toString() {
     return "DDApi { tracesEndpoint=" + tracesEndpoint + " }";
-  }
-
-  public static interface ResponseListener {
-    /** Invoked after the api receives a response from the core agent. */
-    void onResponse(String endpoint, JsonNode responseJson);
   }
 }

@@ -1,3 +1,5 @@
 rootProject.name = 'zipkin-datadog-reporter'
 
 include ':zipkin-datadog-autoconfigure'
+
+enableFeaturePreview('IMPROVED_POM_SUPPORT')

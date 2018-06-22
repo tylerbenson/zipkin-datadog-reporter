@@ -4,6 +4,7 @@ import com.fasterxml.jackson.annotation.JsonGetter;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonInclude.Include;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 import zipkin2.Span;
 
 public class DDMappingSpan {
@@ -16,12 +17,12 @@ public class DDMappingSpan {
 
   @JsonGetter("start")
   public long getStartTime() {
-    return delegateSpan.timestampAsLong() * 1000L;
+    return TimeUnit.MICROSECONDS.toNanos(delegateSpan.timestampAsLong());
   }
 
   @JsonGetter("duration")
   public long getDurationNano() {
-    return delegateSpan.durationAsLong();
+    return TimeUnit.MICROSECONDS.toNanos(delegateSpan.durationAsLong());
   }
 
   @JsonGetter("service")
@@ -29,11 +30,19 @@ public class DDMappingSpan {
     return delegateSpan.localServiceName();
   }
 
+  /**
+   * This method only returns the lower 64 bits of the trace id, so that is all that will be sent to Datadog.
+   * @return
+   */
   @JsonGetter("trace_id")
   public long getTraceId() {
     return lowerHexToUnsignedLong(delegateSpan.traceId());
   }
 
+  /**
+   * This method only returns the lower 64 bits of the span id, so that is all that will be sent to Datadog.
+   * @return
+   */
   @JsonGetter("span_id")
   public long getSpanId() {
     return lowerHexToUnsignedLong(delegateSpan.id());

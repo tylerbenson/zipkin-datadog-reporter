@@ -20,6 +20,11 @@ import zipkin2.reporter.Reporter;
  * reported to the agent after a span is reported that appears to be the root, or after a
  * TIMEOUT_DELAY period. A span is assumed to be a root if it has a Span.Kind of either SERVER or
  * CONSUMER.
+ *
+ * <p>This implementation groups spans into traces using an unbounded ConcurrentHashMap.
+ * "Incomplete" traces are flushed after 30 seconds, but only 1 second if a root span is reported.
+ * This means that spikes of traffic might cause unbounded growth of the contained
+ * ConcurrentHashMap.
  */
 public class DatadogReporter implements Reporter<Span>, Flushable, Closeable {
   public static final long TIMEOUT_DELAY = TimeUnit.SECONDS.toNanos(30);
@@ -82,6 +87,11 @@ public class DatadogReporter implements Reporter<Span>, Flushable, Closeable {
     trace = previousTrace != null ? previousTrace : trace; // Handles race condition
 
     trace.spans.add(new DDMappingSpan(span));
+
+    /* If the span kind is server or consumer, we assume it is the root of the trace.
+     * That implies all span children have likely already been reported and can be
+     * flushed in the next cycle, though in some async cases, this might not be the case.
+     */
     if (span.kind() == Span.Kind.SERVER
         || span.kind() == Span.Kind.CONSUMER
         || span.parentId() == null) {
@@ -118,7 +128,6 @@ public class DatadogReporter implements Reporter<Span>, Flushable, Closeable {
       trace = reportingTraces.poll();
     }
     ddApi.sendTraces(traces);
-    System.out.println("SEND TRACES:" + traces);
   }
 
   private void flushPeriodically() {

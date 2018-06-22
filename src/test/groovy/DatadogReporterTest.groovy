@@ -9,72 +9,106 @@ import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.atomic.AtomicLong
 
 class DatadogReporterTest extends Specification {
-  AtomicLong timestamp = new AtomicLong();
-  BlockingQueue<List<DDMappingSpan>> reported = new LinkedBlockingQueue<>();
+  AtomicLong timestamp = new AtomicLong()
+  BlockingQueue<List<DDMappingSpan>> reported = new LinkedBlockingQueue<>()
   DatadogReporter reporter = new DatadogReporter(reported) {
     @Override
     protected long nanoTime() {
-      return timestamp.get();
+      return timestamp.get()
     }
-  };
+  }
+
+  def cleanup() {
+    reporter.close()
+  }
 
   def "test reporting"() {
     when:
-    timestamp.set(1);
+    timestamp.set(1)
     def client = newSpan("a", "b", "c", Span.Kind.CLIENT, "get /backend")
-    reporter.report(client);
-    timestamp.set(2);
+    reporter.report(client)
+    timestamp.set(2)
     def serverF = newSpan("f", null, "f", Span.Kind.SERVER, "get /other")
-    reporter.report(serverF);
+    reporter.report(serverF)
 
-    reporter.flush();
+    reporter.flush()
 
     then:
     reported.each { it.delegateSpan }.asList() == []
 
     when:
-    timestamp.set(3 + DatadogReporter.COMPLETION_DELAY);
-    reporter.flush();
+    timestamp.set(3 + DatadogReporter.COMPLETION_DELAY)
+    reporter.flush()
 
     then:
     reported.collect { it.delegateSpan }.asList() == [[serverF]]
 
     when:
-    timestamp.set(4);
+    timestamp.set(4)
     def childB = newSpan("a", "a", "b", null, "callBackend")
-    reporter.report(childB);
-    timestamp.set(5);
+    reporter.report(childB)
+    timestamp.set(5)
     def serverA = newSpan("a", null, "a", Span.Kind.SERVER, "get /frontend")
-    reporter.report(serverA);
+    reporter.report(serverA)
 
-    timestamp.set(6 + DatadogReporter.COMPLETION_DELAY);
-    reporter.flush();
+    timestamp.set(6 + DatadogReporter.COMPLETION_DELAY)
+    reporter.flush()
 
     then:
     reported.collect { it.delegateSpan }.asList() == [[serverF], [client, childB, serverA]]
 
     when:
-    timestamp.set(7);
+    timestamp.set(7)
     def childE = newSpan("a", "a", "e", null, "lateCall")
-    reporter.report(childE);
+    reporter.report(childE)
 
-    timestamp.set(8 + DatadogReporter.COMPLETION_DELAY);
-    reporter.flush();
+    timestamp.set(8 + DatadogReporter.COMPLETION_DELAY)
+    reporter.flush()
 
     then:
     reported.collect { it.delegateSpan }.asList() == [[serverF], [client, childB, serverA]]
 
     when:
-    timestamp.set(8 + DatadogReporter.TIMEOUT_DELAY);
-    reporter.flush();
+    timestamp.set(8 + DatadogReporter.TIMEOUT_DELAY)
+    reporter.flush()
 
     then:
     reported.collect { it.delegateSpan }.asList() == [[serverF], [client, childB, serverA], [childE]]
   }
 
+  def "test with multiple reporters"() {
+    setup:
+    def otherReported = new LinkedBlockingQueue<List<DDMappingSpan>>()
+    def otherReporter = new DatadogReporter(otherReported) {
+      @Override
+      protected long nanoTime() {
+        return timestamp.get()
+      }
+    }
+
+    def span = newSpan("a", "b", "c", Span.Kind.SERVER, "get /d")
+    timestamp.set(0)
+
+    when:
+    reporter.report(span)
+    otherReporter.report(span)
+
+    timestamp.set(1 + DatadogReporter.COMPLETION_DELAY)
+
+    reporter.flush()
+    otherReporter.flush()
+
+    then:
+    reported.collect { it.delegateSpan }.asList() == [[span]]
+    otherReported.collect { it.delegateSpan }.asList() == [[span]]
+
+    cleanup:
+    otherReporter.close()
+  }
+
 
   static Span newSpan(String traceId, String parentId, String id, Span.Kind kind, String spanName) {
-    Span.Builder result = Span.newBuilder().traceId(traceId).parentId(parentId).id(id).kind(kind).name(spanName).localEndpoint(Endpoint.newBuilder().serviceName("my-app").build());
-    return result.build();
+    Span.Builder result = Span.newBuilder().traceId(traceId).parentId(parentId).id(id).kind(kind).name(spanName).localEndpoint(Endpoint.newBuilder().serviceName("my-app").build())
+    return result.build()
   }
 }

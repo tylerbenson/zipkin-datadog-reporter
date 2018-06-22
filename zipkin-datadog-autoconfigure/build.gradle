@@ -1,4 +1,4 @@
-apply plugin: 'java'
+apply plugin: 'java-library'
 
 repositories {
   mavenLocal()
@@ -7,8 +7,11 @@ repositories {
 }
 
 dependencies {
-  compile project.parent
-  compile group: 'org.springframework.boot', name: 'spring-boot', version: '2.0.1.RELEASE'
-  compile group: 'org.springframework.boot', name: 'spring-boot-autoconfigure', version: '2.0.1.RELEASE'
-  compile group: 'org.springframework.cloud', name: 'spring-cloud-sleuth-zipkin', version: '1.3.3.RELEASE'
+  implementation project.parent
+
+  implementation group:  'org.springframework.boot', name: 'spring-boot-dependencies', version: '2.0.1.RELEASE'
+  implementation group: 'org.springframework.boot', name: 'spring-boot'
+  implementation group: 'org.springframework.boot', name: 'spring-boot-autoconfigure'
+
+  implementation group: 'org.springframework.cloud', name: 'spring-cloud-sleuth-zipkin', version: '1.3.3.RELEASE'
 }
